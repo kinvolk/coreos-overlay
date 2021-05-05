@@ -36,7 +36,7 @@ SLOT="0/2"
 # Flatcar: Dropped cgroup-hybrid. We use legacy hierarchy by default
 # to keep docker working. Dropped static-libs, we don't care about
 # static libraries.
-IUSE="acl apparmor audit build cryptsetup curl dns-over-tls elfutils +gcrypt gnuefi homed http +hwdb idn importd +kmod +lz4 lzma nat pam pcre pkcs11 policykit pwquality qrcode repart +resolvconf +seccomp selinux +split-usr ssl +sysv-utils test vanilla xkb +zstd"
+IUSE="acl apparmor audit build cryptsetup curl dns-over-tls elfutils +gcrypt gnuefi homed http +hwdb idn importd +kmod +lz4 lzma nat pam pcre pkcs11 policykit pwquality qrcode repart +resolvconf +seccomp selinux +split-usr ssl +sysv-utils test tpm vanilla xkb +zstd"
 
 REQUIRED_USE="
 	homed? ( cryptsetup )
@@ -80,11 +80,15 @@ COMMON_DEPEND=">=sys-apps/util-linux-2.30:0=[${MULTILIB_USEDEP}]
 	repart? ( ${OPENSSL_DEP} )
 	seccomp? ( >=sys-libs/libseccomp-2.3.3:0= )
 	selinux? ( sys-libs/libselinux:0= )
+	tpm? ( app-crypt/tpm2-tss:0= )
 	xkb? ( >=x11-libs/libxkbcommon-0.4.1:0= )
 	zstd? ( >=app-arch/zstd-1.4.0:0=[${MULTILIB_USEDEP}] )
 "
 
 RDEPEND="${COMMON_DEPEND}
+	acct-group/users
+	>=acct-user/root-0-r1
+	acct-user/nobody
 	sysv-utils? ( !sys-apps/sysvinit )
 	!sysv-utils? ( sys-apps/sysvinit )
 	resolvconf? ( !net-dns/openresolv )
@@ -188,6 +192,7 @@ src_prepare() {
 		"${FILESDIR}/0006-needs-update-don-t-require-strictly-newer-usr.patch"
 		"${FILESDIR}/0007-core-use-max-for-DefaultTasksMax.patch"
 		"${FILESDIR}/0008-systemd-Disable-SELinux-permissions-checks.patch"
+		"${FILESDIR}/0009-rfkill.patch"
 	)
 
 	# Flatcar: We carry our own patches, we don't use the ones
@@ -214,11 +219,11 @@ src_configure() {
 	multilib-minimal_src_configure
 }
 
-meson_use() {
+sd_use() {
 	usex "$1" true false
 }
 
-meson_multilib() {
+sd_native() {
 	if multilib_is_native_abi; then
 		echo true
 	else
@@ -226,7 +231,7 @@ meson_multilib() {
 	fi
 }
 
-meson_multilib_native_use() {
+sd_native_use() {
 	if multilib_is_native_abi && use "$1"; then
 		echo true
 	else
@@ -260,38 +265,42 @@ multilib_src_configure() {
 		# Docker.
 		-Ddefault-hierarchy=legacy
 		# Optional components/dependencies
-		-Dacl=$(meson_multilib_native_use acl)
-		-Dapparmor=$(meson_multilib_native_use apparmor)
-		-Daudit=$(meson_multilib_native_use audit)
-		-Dlibcryptsetup=$(meson_multilib_native_use cryptsetup)
-		-Dlibcurl=$(meson_multilib_native_use curl)
-		-Delfutils=$(meson_multilib_native_use elfutils)
-		-Dgcrypt=$(meson_use gcrypt)
-		-Dgnu-efi=$(meson_multilib_native_use gnuefi)
+		-Dacl=$(sd_native_use acl)
+		-Dapparmor=$(sd_native_use apparmor)
+		-Daudit=$(sd_native_use audit)
+		-Dlibcryptsetup=$(sd_native_use cryptsetup)
+		-Dlibcurl=$(sd_native_use curl)
+		-Ddns-over-tls=$(sd_native_use dns-over-tls)
+		-Delfutils=$(sd_native_use elfutils)
+		-Dgcrypt=$(sd_use gcrypt)
+		-Dgnu-efi=$(sd_native_use gnuefi)
+		-Defi-includedir="${ESYSROOT}/usr/include/efi"
+		-Defi-ld="$(tc-getLD)"
 		-Defi-libdir="${ESYSROOT}/usr/$(get_libdir)"
-		-Dhomed=$(meson_multilib_native_use homed)
-		-Dhwdb=$(meson_multilib_native_use hwdb)
-		-Dmicrohttpd=$(meson_multilib_native_use http)
-		-Didn=$(meson_multilib_native_use idn)
-		-Dimportd=$(meson_multilib_native_use importd)
-		-Dbzip2=$(meson_multilib_native_use importd)
-		-Dzlib=$(meson_multilib_native_use importd)
-		-Dkmod=$(meson_multilib_native_use kmod)
-		-Dlz4=$(meson_use lz4)
-		-Dxz=$(meson_use lzma)
-		-Dzstd=$(meson_use zstd)
-		-Dlibiptc=$(meson_multilib_native_use nat)
-		-Dpam=$(meson_use pam)
-		-Dp11kit=$(meson_multilib_native_use pkcs11)
-		-Dpcre2=$(meson_multilib_native_use pcre)
-		-Dpolkit=$(meson_multilib_native_use policykit)
-		-Dpwquality=$(meson_multilib_native_use pwquality)
-		-Dqrencode=$(meson_multilib_native_use qrcode)
-		-Drepart=$(meson_multilib_native_use repart)
-		-Dseccomp=$(meson_multilib_native_use seccomp)
-		-Dselinux=$(meson_multilib_native_use selinux)
-		-Ddbus=$(meson_multilib_native_use test)
-		-Dxkbcommon=$(meson_multilib_native_use xkb)
+		-Dhomed=$(sd_native_use homed)
+		-Dhwdb=$(sd_native_use hwdb)
+		-Dmicrohttpd=$(sd_native_use http)
+		-Didn=$(sd_native_use idn)
+		-Dimportd=$(sd_native_use importd)
+		-Dbzip2=$(sd_native_use importd)
+		-Dzlib=$(sd_native_use importd)
+		-Dkmod=$(sd_native_use kmod)
+		-Dlz4=$(sd_use lz4)
+		-Dxz=$(sd_use lzma)
+		-Dzstd=$(sd_use zstd)
+		-Dlibiptc=$(sd_native_use nat)
+		-Dpam=$(sd_use pam)
+		-Dp11kit=$(sd_native_use pkcs11)
+		-Dpcre2=$(sd_native_use pcre)
+		-Dpolkit=$(sd_native_use policykit)
+		-Dpwquality=$(sd_native_use pwquality)
+		-Dqrencode=$(sd_native_use qrcode)
+		-Drepart=$(sd_native_use repart)
+		-Dseccomp=$(sd_native_use seccomp)
+		-Dselinux=$(sd_native_use selinux)
+		-Dtpm2=$(sd_native_use tpm)
+		-Ddbus=$(sd_native_use test)
+		-Dxkbcommon=$(sd_native_use xkb)
 		# Flatcar: Use our ntp servers.
 		-Dntp-servers="0.flatcar.pool.ntp.org 1.flatcar.pool.ntp.org 2.flatcar.pool.ntp.org 3.flatcar.pool.ntp.org"
 		# Breaks screen, tmux, etc.
@@ -300,25 +309,26 @@ multilib_src_configure() {
 		-Dcreate-log-dirs=false
 
 		# multilib options
-		-Dbacklight=$(meson_multilib)
-		-Dbinfmt=$(meson_multilib)
-		-Dcoredump=$(meson_multilib)
-		-Denvironment-d=$(meson_multilib)
-		-Dfirstboot=$(meson_multilib)
-		-Dhibernate=$(meson_multilib)
-		-Dhostnamed=$(meson_multilib)
-		-Dldconfig=$(meson_multilib)
-		-Dlocaled=$(meson_multilib)
-		-Dman=$(meson_multilib)
-		-Dnetworkd=$(meson_multilib)
-		-Dquotacheck=$(meson_multilib)
-		-Drandomseed=$(meson_multilib)
-		-Drfkill=$(meson_multilib)
-		-Dsysusers=$(meson_multilib)
-		-Dtimedated=$(meson_multilib)
-		-Dtimesyncd=$(meson_multilib)
-		-Dtmpfiles=$(meson_multilib)
-		-Dvconsole=$(meson_multilib)
+		-Dbacklight=$(sd_native)
+		-Dbinfmt=$(sd_native)
+		-Dcoredump=$(sd_native)
+		-Denvironment-d=$(sd_native)
+		-Dfirstboot=$(sd_native)
+		-Dhibernate=$(sd_native)
+		-Dhostnamed=$(sd_native)
+		-Dldconfig=$(sd_native)
+		-Dlocaled=$(sd_native)
+		-Dman=$(sd_native)
+		-Dnetworkd=$(sd_native)
+		-Dquotacheck=$(sd_native)
+		-Drandomseed=$(sd_native)
+		-Drfkill=$(sd_native)
+		-Dsysusers=$(sd_native)
+		-Dtimedated=$(sd_native)
+		-Dtimesyncd=$(sd_native)
+		-Dtmpfiles=$(sd_native)
+		-Dvconsole=$(sd_native)
+
 
 		# Flatcar: Specify this, or meson breaks due to no
 		# /etc/login.defs.
