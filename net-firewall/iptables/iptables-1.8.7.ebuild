@@ -1,36 +1,39 @@
-# Copyright 1999-2018 Gentoo Foundation
+# Copyright 1999-2021 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=6
+EAPI=7
 
-# Force users doing their own patches to install their own tools
-AUTOTOOLS_AUTO_DEPEND=no
-
-inherit ltprune multilib systemd toolchain-funcs autotools flag-o-matic
+inherit multilib systemd toolchain-funcs autotools flag-o-matic usr-ldscript
 
 DESCRIPTION="Linux kernel (2.4+) firewall, NAT and packet mangling tools"
 HOMEPAGE="https://www.netfilter.org/projects/iptables/"
 SRC_URI="https://www.netfilter.org/projects/iptables/files/${P}.tar.bz2"
 
 LICENSE="GPL-2"
-# Subslot tracks libxtables as that's the one other packages generally link
-# against and iptables changes.  Will have to revisit if other sonames change.
-SLOT="0/12"
-KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~ia64 ~m68k ~mips ~ppc ~ppc64 ~s390 ~sh ~sparc ~x86"
+# Subslot reflects PV when libxtables and/or libip*tc was changed
+# the last time.
+SLOT="0/1.8.3"
+KEYWORDS="~alpha amd64 arm arm64 ~hppa ~ia64 ~m68k ~mips ppc ppc64 ~riscv ~s390 sparc x86"
 IUSE="conntrack ipv6 netlink nftables pcap static-libs"
 
+BUILD_DEPEND="
+	>=app-eselect/eselect-iptables-20200508
+"
 COMMON_DEPEND="
 	conntrack? ( >=net-libs/libnetfilter_conntrack-1.0.6 )
 	netlink? ( net-libs/libnfnetlink )
 	nftables? (
 		>=net-libs/libmnl-1.0:0=
-		>=net-libs/libnftnl-1.0.5:0=
+		>=net-libs/libnftnl-1.1.6:0=
 	)
 	pcap? ( net-libs/libpcap )
 "
 DEPEND="${COMMON_DEPEND}
 	virtual/os-headers
 	>=sys-kernel/linux-headers-4.4:0
+"
+BDEPEND="${BUILD_DEPEND}
+	app-eselect/eselect-iptables
 	virtual/pkgconfig
 	nftables? (
 		sys-devel/flex
@@ -38,15 +41,21 @@ DEPEND="${COMMON_DEPEND}
 	)
 "
 RDEPEND="${COMMON_DEPEND}
+	${BUILD_DEPEND}
 	nftables? ( net-misc/ethertypes )
 "
 
+PATCHES=(
+	"${FILESDIR}/iptables-1.8.4-no-symlinks.patch"
+	"${FILESDIR}/iptables-1.8.2-link.patch"
+)
+
 src_prepare() {
 	# use the saner headers from the kernel
-	rm -f include/linux/{kernel,types}.h
+	rm include/linux/{kernel,types}.h || die
 
-	# Only run autotools if user patched something
-	eapply_user && eautoreconf || elibtoolize
+	default
+	eautoreconf
 }
 
 src_configure() {
@@ -76,8 +85,6 @@ src_configure() {
 }
 
 src_compile() {
-	# Deal with parallel build errors.
-	use nftables && emake -C iptables xtables-config-parser.h
 	emake V=1
 }
 
@@ -98,17 +105,20 @@ src_install() {
 	doins include/iptables/internal.h
 
 	keepdir /var/lib/iptables
-	newinitd "${FILESDIR}"/${PN}.init iptables
-	newconfd "${FILESDIR}"/${PN}-1.4.13.confd iptables
+	newinitd "${FILESDIR}"/${PN}-r2.init iptables
+	newconfd "${FILESDIR}"/${PN}-r1.confd iptables
 	if use ipv6 ; then
 		keepdir /var/lib/ip6tables
-		newinitd "${FILESDIR}"/iptables.init ip6tables
-		newconfd "${FILESDIR}"/ip6tables-1.4.13.confd ip6tables
+		dosym iptables /etc/init.d/ip6tables
+		newconfd "${FILESDIR}"/ip6tables-r1.confd ip6tables
 	fi
 
 	if use nftables; then
 		# Bug 647458
-		rm "${ED%/}"/etc/ethertypes || die
+		rm "${ED}"/etc/ethertypes || die
+
+		# Bugs 660886 and 669894
+		rm "${ED}"/sbin/{arptables,ebtables}{,-{save,restore}} || die
 	fi
 
 	systemd_dounit "${FILESDIR}"/systemd/iptables{,-{re,}store}.service
@@ -117,7 +127,51 @@ src_install() {
 	fi
 
 	# Move important libs to /lib #332175
-	gen_usr_ldscript -a ip{4,6}tc iptc xtables
+	gen_usr_ldscript -a ip{4,6}tc xtables
 
-	prune_libtool_files
+	find "${ED}" -type f -name "*.la" -delete || die
+}
+
+pkg_postinst() {
+	local default_iptables="xtables-legacy-multi"
+	if ! eselect iptables show &>/dev/null; then
+		elog "Current iptables implementation is unset, setting to ${default_iptables}"
+		eselect iptables set "${default_iptables}"
+	fi
+
+	if use nftables; then
+		local tables
+		for tables in {arp,eb}tables; do
+			if ! eselect ${tables} show &>/dev/null; then
+				elog "Current ${tables} implementation is unset, setting to ${default_iptables}"
+				eselect ${tables} set xtables-nft-multi
+			fi
+		done
+	fi
+
+	eselect iptables show
+}
+
+pkg_prerm() {
+	elog "Unsetting iptables symlinks before removal"
+	eselect iptables unset
+
+	if ! has_version 'net-firewall/ebtables'; then
+		elog "Unsetting ebtables symlinks before removal"
+		eselect ebtables unset
+	elif [[ -z ${REPLACED_BY_VERSION} ]]; then
+		elog "Resetting ebtables symlinks to ebtables-legacy"
+		eselect ebtables set ebtables-legacy
+	fi
+
+	if ! has_version 'net-firewall/arptables'; then
+		elog "Unsetting arptables symlinks before removal"
+		eselect arptables unset
+	elif [[ -z ${REPLACED_BY_VERSION} ]]; then
+		elog "Resetting arptables symlinks to arptables-legacy"
+		eselect arptables set arptables-legacy
+	fi
+
+	# the eselect module failing should not be fatal
+	return 0
 }
